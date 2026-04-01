@@ -1,0 +1,23 @@
+{
+  "name": "codex-account-switcher",
+  "private": true,
+  "version": "1.0.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc && vite build",
+    "preview": "vite preview",
+    "tauri": "cargo tauri"
+  },
+  "dependencies": {
+    "@tauri-apps/api": "^2"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git@github.com:newbeeeeeeee-cpu/codex-api-switcher.git"
+  },
+  "devDependencies": {
+    "typescript": "^5",
+    "vite": "^7"
+  }
+}
