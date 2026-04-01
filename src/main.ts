@@ -39,29 +39,6 @@ if (!app) {
 
 app.innerHTML = `
   <main class="shell">
-    <section class="hero">
-      <div>
-        <p class="eyebrow">Tauri / Codex</p>
-        <h1>账号变更器</h1>
-        <p class="hero-copy">
-          只改当前平台 Codex 配置目录中的两处真实配置：<code>auth.json</code> 的
-          <code>OPENAI_API_KEY</code>，以及 <code>config.toml</code> 里
-          <code>[model_providers.OpenAI]</code> 下的 <code>base_url</code>。macOS / Linux
-          默认目录是 <code>~/.codex</code>，Windows 默认目录是
-          <code>%USERPROFILE%\\.codex</code>。
-        </p>
-      </div>
-      <div class="hero-note">
-        <span class="chip chip--success">最小写入</span>
-        <span class="chip">本地保存账号</span>
-        <span class="chip">随时回读当前生效值</span>
-      </div>
-    </section>
-
-    <section class="status-panel">
-      <div id="status" class="status status--info" aria-live="polite">正在读取当前 Codex 配置…</div>
-    </section>
-
     <section class="layout">
       <aside class="panel panel--sidebar">
         <div class="panel-head">
@@ -69,7 +46,10 @@ app.innerHTML = `
             <p class="panel-kicker">Saved Accounts</p>
             <h2>已保存账号</h2>
           </div>
-          <button id="refreshButton" class="button button--ghost" type="button">刷新</button>
+          <div class="toolbar">
+            <button id="newButton" class="button button--ghost" type="button">新建</button>
+            <button id="refreshButton" class="button button--ghost" type="button">刷新</button>
+          </div>
         </div>
 
         <div class="storage-block">
@@ -88,6 +68,10 @@ app.innerHTML = `
       </aside>
 
       <section class="panel panel--main">
+        <section class="status-panel status-panel--inline">
+          <div id="status" class="status status--info" aria-live="polite">正在读取当前 Codex 配置…</div>
+        </section>
+
         <div class="panel-head">
           <div>
             <p class="panel-kicker">Live Config</p>
@@ -124,7 +108,7 @@ app.innerHTML = `
           </div>
           <div class="toolbar">
             <button id="importCurrentButton" class="button button--ghost" type="button">导入当前配置</button>
-            <button id="clearFormButton" class="button button--ghost" type="button">清空表单</button>
+            <button id="clearFormButton" class="button button--ghost" type="button">新建</button>
           </div>
         </div>
 
@@ -170,6 +154,7 @@ const apiKeyInput = query<HTMLInputElement>("#apiKeyInput");
 const baseUrlInput = query<HTMLInputElement>("#baseUrlInput");
 
 const refreshButton = query<HTMLButtonElement>("#refreshButton");
+const newButton = query<HTMLButtonElement>("#newButton");
 const pullCurrentButton = query<HTMLButtonElement>("#pullCurrentButton");
 const importCurrentButton = query<HTMLButtonElement>("#importCurrentButton");
 const clearFormButton = query<HTMLButtonElement>("#clearFormButton");
@@ -177,6 +162,7 @@ const saveButton = query<HTMLButtonElement>("#saveButton");
 const applyButton = query<HTMLButtonElement>("#applyButton");
 
 const actionButtons = [
+  newButton,
   refreshButton,
   pullCurrentButton,
   importCurrentButton,
@@ -191,6 +177,16 @@ const state = {
   selectedProfileId: "",
   pendingDeleteId: "",
 };
+
+newButton.addEventListener("click", () => {
+  state.selectedProfileId = "";
+  state.pendingDeleteId = "";
+  nameInput.value = "";
+  apiKeyInput.value = "";
+  baseUrlInput.value = "";
+  renderProfiles();
+  setStatus("已开始新建账号。", "info");
+});
 
 refreshButton.addEventListener("click", () => {
   void refreshSnapshot("已刷新账号列表和当前配置。");
@@ -245,12 +241,6 @@ profileListEl.addEventListener("click", (event) => {
       return;
     }
 
-    if (action === "load") {
-      state.pendingDeleteId = "";
-      loadProfileIntoForm(id);
-      return;
-    }
-
     if (action === "apply") {
       state.pendingDeleteId = "";
       void applySavedProfile(id);
@@ -281,9 +271,8 @@ profileListEl.addEventListener("click", (event) => {
     return;
   }
 
-  state.selectedProfileId = id;
   state.pendingDeleteId = "";
-  renderProfiles();
+  loadProfileIntoForm(id);
 });
 
 void refreshSnapshot();
@@ -486,7 +475,6 @@ function renderProfiles() {
           <p class="profile-card__meta">${escapeHtml(profile.baseUrl)}</p>
           <p class="profile-card__meta profile-card__meta--mono">${escapeHtml(maskKey(profile.apiKey))}</p>
           <div class="profile-card__actions">
-            <button class="button button--tiny button--ghost" type="button" data-action="load" data-id="${escapeHtml(profile.id)}">载入</button>
             <button class="button button--tiny button--secondary" type="button" data-action="apply" data-id="${escapeHtml(profile.id)}">应用</button>
             <button class="button button--tiny button--danger" type="button" data-action="delete" data-id="${escapeHtml(profile.id)}">${deleteLabel}</button>
           </div>
