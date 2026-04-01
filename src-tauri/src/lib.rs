@@ -18,6 +18,7 @@ const PROFILE_STORE_FILE_NAME: &str = "profiles.json";
 #[serde(rename_all = "camelCase")]
 struct CurrentConfig {
     api_key: String,
+    provider: String,
     base_url: String,
     auth_path: String,
     config_path: String,
@@ -29,6 +30,8 @@ struct AccountProfile {
     id: String,
     name: String,
     api_key: String,
+    #[serde(default = "default_provider")]
+    provider: String,
     base_url: String,
     updated_at: u64,
 }
@@ -56,6 +59,7 @@ struct SaveProfileInput {
     id: Option<String>,
     name: String,
     api_key: String,
+    provider: String,
     base_url: String,
 }
 
@@ -63,6 +67,7 @@ struct SaveProfileInput {
 #[serde(rename_all = "camelCase")]
 struct ApplyProfileInput {
     api_key: String,
+    provider: String,
     base_url: String,
 }
 
@@ -81,6 +86,7 @@ fn load_snapshot() -> Result<AppSnapshot, String> {
 fn save_profile(input: SaveProfileInput) -> Result<SaveProfileResult, String> {
     let name = input.name.trim();
     let api_key = input.api_key.trim();
+    let provider = normalize_provider(&input.provider)?;
     let base_url = input.base_url.trim();
 
     if name.is_empty() {
@@ -98,6 +104,7 @@ fn save_profile(input: SaveProfileInput) -> Result<SaveProfileResult, String> {
         if let Some(profile) = profiles.iter_mut().find(|profile| profile.id == id) {
             profile.name = name.to_string();
             profile.api_key = api_key.to_string();
+            profile.provider = provider.clone();
             profile.base_url = base_url.to_string();
             profile.updated_at = now;
             id
@@ -107,6 +114,7 @@ fn save_profile(input: SaveProfileInput) -> Result<SaveProfileResult, String> {
                 id: new_id.clone(),
                 name: name.to_string(),
                 api_key: api_key.to_string(),
+                provider: provider.clone(),
                 base_url: base_url.to_string(),
                 updated_at: now,
             });
@@ -118,6 +126,7 @@ fn save_profile(input: SaveProfileInput) -> Result<SaveProfileResult, String> {
             id: new_id.clone(),
             name: name.to_string(),
             api_key: api_key.to_string(),
+            provider,
             base_url: base_url.to_string(),
             updated_at: now,
         });
@@ -148,6 +157,7 @@ fn delete_profile(id: String) -> Result<Vec<AccountProfile>, String> {
 #[tauri::command]
 fn apply_profile(input: ApplyProfileInput) -> Result<CurrentConfig, String> {
     let api_key = input.api_key.trim();
+    let provider = normalize_provider(&input.provider)?;
     let base_url = input.base_url.trim();
 
     if api_key.is_empty() || base_url.is_empty() {
@@ -163,7 +173,7 @@ fn apply_profile(input: ApplyProfileInput) -> Result<CurrentConfig, String> {
         .map_err(|error| format!("读取 config.toml 失败: {error}"))?;
 
     let updated_auth = replace_auth_api_key(&auth_content, api_key)?;
-    let updated_config = replace_openai_base_url(&config_content, base_url)?;
+    let updated_config = replace_openai_base_url(&config_content, &provider, base_url);
 
     fs::write(&auth_path, updated_auth).map_err(|error| format!("写入 auth.json 失败: {error}"))?;
     fs::write(&config_path, updated_config)
@@ -190,10 +200,12 @@ fn read_current_config() -> Result<CurrentConfig, String> {
         .ok_or_else(|| "auth.json 里找不到 OPENAI_API_KEY。".to_string())?
         .to_string();
 
+    let provider = active_model_provider(&config_content).unwrap_or_else(default_provider);
     let base_url = read_openai_base_url(&config_content)?;
 
     Ok(CurrentConfig {
         api_key,
+        provider,
         base_url,
         auth_path: auth_path.display().to_string(),
         config_path: config_path.display().to_string(),
@@ -305,11 +317,42 @@ fn generate_profile_id() -> String {
     format!("profile-{}", current_timestamp())
 }
 
+fn default_provider() -> String {
+    "OpenAI".to_string()
+}
+
+fn normalize_provider(provider: &str) -> Result<String, String> {
+    let trimmed = provider.trim();
+
+    if trimmed.is_empty() {
+        return Err("provider 不能为空。".into());
+    }
+
+    if trimmed
+        .chars()
+        .all(|ch| ch.is_ascii_alphanumeric() || ch == '_' || ch == '-')
+    {
+        return Ok(trimmed.to_string());
+    }
+
+    Err("provider 只能包含字母、数字、- 和 _。".into())
+}
+
 fn read_openai_base_url(content: &str) -> Result<String, String> {
-    let (_, section) = openai_section(content)?;
+    if let Some(provider) = active_model_provider(content) {
+        if let Some((_, section)) = provider_section(content, &provider) {
+            if let Some(captures) = base_url_read_regex().captures(section) {
+                return Ok(captures
+                    .get(1)
+                    .map(|value| value.as_str().to_string())
+                    .unwrap_or_default());
+            }
+        }
+    }
+
     let captures = base_url_read_regex()
-        .captures(section)
-        .ok_or_else(|| "在 [model_providers.OpenAI] 里找不到 base_url。".to_string())?;
+        .captures(content)
+        .ok_or_else(|| "config.toml 里找不到 base_url。".to_string())?;
 
     Ok(captures
         .get(1)
@@ -325,36 +368,61 @@ fn replace_auth_api_key(content: &str, api_key: &str) -> Result<String, String> 
         format!("{}{}", &captures[1], json_value)
     });
 
-    if updated == content {
-        return Err("auth.json 里找不到 OPENAI_API_KEY。".into());
+    if updated != content {
+        return Ok(updated.into_owned());
     }
 
-    Ok(updated.into_owned())
+    if let Ok(mut json) = serde_json::from_str::<Value>(content) {
+        if let Some(object) = json.as_object_mut() {
+            object.insert(
+                "OPENAI_API_KEY".to_string(),
+                Value::String(api_key.to_string()),
+            );
+            return serde_json::to_string_pretty(&json)
+                .map_err(|error| format!("序列化 auth.json 失败: {error}"));
+        }
+    }
+
+    build_auth_template(api_key)
 }
 
-fn replace_openai_base_url(content: &str, base_url: &str) -> Result<String, String> {
-    let ((start, end), section) = openai_section(content)?;
+fn replace_openai_base_url(content: &str, provider: &str, base_url: &str) -> String {
     let quoted_base_url = toml_basic_string(base_url);
 
-    let updated_section = base_url_write_regex().replace(section, |captures: &Captures| {
-        format!("{}{}{}", &captures[1], quoted_base_url, &captures[2])
-    });
+    let content = replace_model_provider(content, provider);
 
-    if updated_section == section {
-        return Err("在 [model_providers.OpenAI] 里找不到 base_url。".into());
+    if let Some(((start, end), section)) = provider_section(&content, provider) {
+        let updated_section = base_url_write_regex().replace(section, |captures: &Captures| {
+            format!("{}{}{}", &captures[1], quoted_base_url, &captures[2])
+        });
+
+        if updated_section != section {
+            let mut merged = String::with_capacity(content.len() + quoted_base_url.len());
+            merged.push_str(&content[..start]);
+            merged.push_str(&updated_section);
+            merged.push_str(&content[end..]);
+            return merged;
+        }
     }
 
-    let mut updated = String::with_capacity(content.len() + quoted_base_url.len());
-    updated.push_str(&content[..start]);
-    updated.push_str(&updated_section);
-    updated.push_str(&content[end..]);
-    Ok(updated)
+    build_config_template(provider, base_url)
 }
 
-fn openai_section(content: &str) -> Result<((usize, usize), &str), String> {
-    let header = openai_section_regex()
-        .find(content)
-        .ok_or_else(|| "config.toml 里找不到 [model_providers.OpenAI]。".to_string())?;
+fn active_model_provider(content: &str) -> Option<String> {
+    model_provider_regex()
+        .captures(content)
+        .and_then(|captures| captures.get(1))
+        .map(|value| value.as_str().to_string())
+}
+
+fn provider_section<'a>(content: &'a str, provider: &str) -> Option<((usize, usize), &'a str)> {
+    let header_pattern = format!(
+        r#"(?m)^\[model_providers\.(?:{}|{})\]\s*$"#,
+        regex::escape(provider),
+        regex::escape(&toml_basic_string(provider))
+    );
+    let header_regex = Regex::new(&header_pattern).ok()?;
+    let header = header_regex.find(content)?;
 
     let after_header = header.end();
     let rest = &content[after_header..];
@@ -363,10 +431,51 @@ fn openai_section(content: &str) -> Result<((usize, usize), &str), String> {
         .map(|section| after_header + section.start())
         .unwrap_or_else(|| content.len());
 
-    Ok((
+    Some((
         (header.start(), next_section),
         &content[header.start()..next_section],
     ))
+}
+
+fn replace_model_provider(content: &str, provider: &str) -> String {
+    let quoted_provider = toml_basic_string(provider);
+    let updated = model_provider_write_regex().replace(content, |captures: &Captures| {
+        format!("{}{}{}", &captures[1], quoted_provider, &captures[2])
+    });
+
+    if updated == content {
+        return content.to_string();
+    }
+
+    updated.into_owned()
+}
+
+fn build_auth_template(api_key: &str) -> Result<String, String> {
+    serde_json::to_string_pretty(&serde_json::json!({
+        "OPENAI_API_KEY": api_key
+    }))
+    .map_err(|error| format!("序列化 auth.json 模板失败: {error}"))
+}
+
+fn build_config_template(provider: &str, base_url: &str) -> String {
+    let provider_key = render_toml_key(provider);
+    let quoted_provider = toml_basic_string(provider);
+    let quoted_base_url = toml_basic_string(base_url);
+
+    format!(
+        "model_provider = {quoted_provider}\nmodel = \"gpt-5.4\"\ndisable_response_storage = true\nmodel_reasoning_effort = \"medium\"\npersonality = \"pragmatic\"\n\n[model_providers.{provider_key}]\nname = {quoted_provider}\nwire_api = \"responses\"\nrequires_openai_auth = true\nbase_url = {quoted_base_url}\n"
+    )
+}
+
+fn render_toml_key(value: &str) -> String {
+    if value
+        .chars()
+        .all(|ch| ch.is_ascii_alphanumeric() || ch == '_' || ch == '-')
+    {
+        value.to_string()
+    } else {
+        toml_basic_string(value)
+    }
 }
 
 fn toml_basic_string(value: &str) -> String {
@@ -399,11 +508,19 @@ fn auth_key_regex() -> &'static Regex {
     })
 }
 
-fn openai_section_regex() -> &'static Regex {
+fn model_provider_regex() -> &'static Regex {
     static REGEX: OnceLock<Regex> = OnceLock::new();
     REGEX.get_or_init(|| {
-        Regex::new(r#"(?m)^\[model_providers\.OpenAI\]\s*$"#)
-            .expect("OpenAI section regex must compile")
+        Regex::new(r#"(?m)^\s*model_provider\s*=\s*"((?:[^"\\]|\\.)*)"\s*(?:#.*)?$"#)
+            .expect("model_provider regex must compile")
+    })
+}
+
+fn model_provider_write_regex() -> &'static Regex {
+    static REGEX: OnceLock<Regex> = OnceLock::new();
+    REGEX.get_or_init(|| {
+        Regex::new(r#"(?m)^(\s*model_provider\s*=\s*)"(?:[^"\\]|\\.)*"(\s*(?:#.*)?)$"#)
+            .expect("model_provider write regex must compile")
     })
 }
 
@@ -453,7 +570,9 @@ pub fn run() {
 
 #[cfg(test)]
 mod tests {
-    use super::{read_openai_base_url, replace_auth_api_key, replace_openai_base_url};
+    use super::{
+        build_config_template, read_openai_base_url, replace_auth_api_key, replace_openai_base_url,
+    };
 
     #[test]
     fn replaces_only_openai_base_url_line() {
@@ -470,8 +589,7 @@ requires_openai_auth = true
 trust_level = "trusted"
 "#;
 
-        let updated = replace_openai_base_url(original, "https://example.com/v1")
-            .expect("should replace base_url");
+        let updated = replace_openai_base_url(original, "OpenAI", "https://example.com/v1");
 
         assert!(updated.contains(r#"base_url = "https://example.com/v1""#));
         assert!(updated.contains(r#"wire_api = "responses""#));
@@ -508,10 +626,82 @@ wire_api = "responses"
     fn replaces_base_url_in_crlf_config() {
         let original = "[model_providers.OpenAI]\r\nname = \"OpenAI\"\r\nbase_url = \"http://localhost:8080\"\r\nwire_api = \"responses\"\r\n";
 
-        let updated = replace_openai_base_url(original, "https://example.com/v1")
-            .expect("should replace base_url in CRLF config");
+        let updated = replace_openai_base_url(original, "OpenAI", "https://example.com/v1");
 
         assert!(updated.contains("base_url = \"https://example.com/v1\"\r\n"));
         assert!(updated.contains("\r\nwire_api = \"responses\"\r\n"));
+    }
+
+    #[test]
+    fn reads_base_url_from_active_custom_provider() {
+        let config = r#"model_provider = "custom"
+
+[model_providers.OpenAI]
+base_url = "https://wrong.example.com/v1"
+
+[model_providers.custom]
+name = "custom"
+base_url = "https://right.example.com/v1"
+"#;
+
+        let base_url = read_openai_base_url(config).expect("should read active provider base_url");
+        assert_eq!(base_url, "https://right.example.com/v1");
+    }
+
+    #[test]
+    fn replaces_base_url_in_active_custom_provider() {
+        let original = r#"model_provider = "custom"
+
+[model_providers.OpenAI]
+base_url = "https://wrong.example.com/v1"
+
+[model_providers.custom]
+name = "custom"
+base_url = "https://right.example.com/v1"
+"#;
+
+        let updated = replace_openai_base_url(original, "custom", "https://new.example.com/v1");
+
+        assert!(updated.contains(
+            r#"[model_providers.OpenAI]
+base_url = "https://wrong.example.com/v1""#
+        ));
+        assert!(updated.contains(
+            r#"[model_providers.custom]
+name = "custom"
+base_url = "https://new.example.com/v1""#
+        ));
+    }
+
+    #[test]
+    fn falls_back_to_first_base_url_without_provider_section() {
+        let config = r#"model_provider = "custom"
+base_url = "https://fallback.example.com/v1"
+"#;
+
+        let base_url = read_openai_base_url(config).expect("should read fallback base_url");
+        assert_eq!(base_url, "https://fallback.example.com/v1");
+
+        let updated = replace_openai_base_url(config, "custom", "https://updated.example.com/v1");
+        let expected = build_config_template("custom", "https://updated.example.com/v1");
+        assert_eq!(updated, expected);
+    }
+
+    #[test]
+    fn replaces_auth_key_by_building_template_when_missing() {
+        let updated = replace_auth_api_key("{}", "sk-new").expect("should build auth template");
+        assert!(updated.contains(r#""OPENAI_API_KEY": "sk-new""#));
+    }
+
+    #[test]
+    fn builds_new_template_when_provider_section_is_missing() {
+        let original = r#"model_provider = "custom"
+[projects."/Users/test"]
+trust_level = "trusted"
+"#;
+
+        let updated = replace_openai_base_url(original, "custom", "https://example.com/v1");
+        let expected = build_config_template("custom", "https://example.com/v1");
+        assert_eq!(updated, expected);
     }
 }

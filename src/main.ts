@@ -3,6 +3,7 @@ import "./styles.css";
 
 type CurrentConfig = {
   apiKey: string;
+  provider: string;
   baseUrl: string;
   authPath: string;
   configPath: string;
@@ -12,6 +13,7 @@ type AccountProfile = {
   id: string;
   name: string;
   apiKey: string;
+  provider: string;
   baseUrl: string;
   updatedAt: number;
 };
@@ -30,6 +32,8 @@ type SaveProfileResult = {
 };
 
 type StatusTone = "info" | "success" | "error";
+
+const DEFAULT_PROVIDER_OPTIONS = ["OpenAI", "custom"];
 
 const app = document.querySelector<HTMLDivElement>("#app");
 
@@ -86,6 +90,10 @@ app.innerHTML = `
             <code id="currentApiKey">读取中…</code>
           </div>
           <div class="current-card__row">
+            <span>provider</span>
+            <code id="currentProvider">读取中…</code>
+          </div>
+          <div class="current-card__row">
             <span>base_url</span>
             <code id="currentBaseUrl">读取中…</code>
           </div>
@@ -118,6 +126,13 @@ app.innerHTML = `
             <input id="nameInput" name="name" type="text" placeholder="例如：主账号 / 备用账号 / 测试环境" />
           </label>
 
+          <label class="field">
+            <span>Provider</span>
+            <select id="providerInput" name="provider">
+              <option value="">请选择 provider</option>
+            </select>
+          </label>
+
           <label class="field field--full">
             <span>OpenAI API Key</span>
             <input id="apiKeyInput" name="apiKey" type="text" spellcheck="false" autocomplete="off" placeholder="sk-..." />
@@ -140,6 +155,7 @@ app.innerHTML = `
 
 const statusEl = query<HTMLElement>("#status");
 const currentApiKeyEl = query<HTMLElement>("#currentApiKey");
+const currentProviderEl = query<HTMLElement>("#currentProvider");
 const currentBaseUrlEl = query<HTMLElement>("#currentBaseUrl");
 const authPathEl = query<HTMLElement>("#authPath");
 const configPathEl = query<HTMLElement>("#configPath");
@@ -150,6 +166,7 @@ const profileListEl = query<HTMLElement>("#profileList");
 const emptyProfilesEl = query<HTMLElement>("#emptyProfiles");
 
 const nameInput = query<HTMLInputElement>("#nameInput");
+const providerInput = query<HTMLSelectElement>("#providerInput");
 const apiKeyInput = query<HTMLInputElement>("#apiKeyInput");
 const baseUrlInput = query<HTMLInputElement>("#baseUrlInput");
 
@@ -178,10 +195,13 @@ const state = {
   pendingDeleteId: "",
 };
 
+renderProviderOptions();
+
 newButton.addEventListener("click", () => {
   state.selectedProfileId = "";
   state.pendingDeleteId = "";
   nameInput.value = "";
+  resetProviderSelection();
   apiKeyInput.value = "";
   baseUrlInput.value = "";
   renderProfiles();
@@ -207,6 +227,7 @@ importCurrentButton.addEventListener("click", () => {
   }
 
   apiKeyInput.value = state.current.apiKey;
+  setProviderValue(state.current.provider);
   baseUrlInput.value = state.current.baseUrl;
   setStatus("当前生效配置已导入表单。", "info");
 });
@@ -215,6 +236,7 @@ clearFormButton.addEventListener("click", () => {
   state.selectedProfileId = "";
   state.pendingDeleteId = "";
   nameInput.value = "";
+  resetProviderSelection();
   apiKeyInput.value = "";
   baseUrlInput.value = "";
   renderProfiles();
@@ -297,10 +319,13 @@ async function refreshSnapshot(successMessage?: string) {
       state.pendingDeleteId = "";
     }
 
+    renderProviderOptions(state.current?.provider);
     renderCurrent();
     renderProfiles();
     setStatus(successMessage ?? "当前配置已读取。", "success");
   } catch (error) {
+    state.current = null;
+    renderProviderOptions();
     setStatus(normalizeError(error), "error");
   } finally {
     setBusy(false);
@@ -309,6 +334,7 @@ async function refreshSnapshot(successMessage?: string) {
 
 async function saveProfile() {
   const name = nameInput.value.trim();
+  const provider = providerInput.value.trim();
   const apiKey = apiKeyInput.value.trim();
   const baseUrl = baseUrlInput.value.trim();
 
@@ -317,8 +343,8 @@ async function saveProfile() {
     return;
   }
 
-  if (!apiKey || !baseUrl) {
-    setStatus("保存账号前需要填写 API Key 和 base_url。", "error");
+  if (!provider || !apiKey || !baseUrl) {
+    setStatus("保存账号前需要填写 provider、API Key 和 base_url。", "error");
     return;
   }
 
@@ -330,6 +356,7 @@ async function saveProfile() {
       input: {
         id: state.selectedProfileId || null,
         name,
+        provider,
         apiKey,
         baseUrl,
       },
@@ -348,11 +375,12 @@ async function saveProfile() {
 }
 
 async function applyForm() {
+  const provider = providerInput.value.trim();
   const apiKey = apiKeyInput.value.trim();
   const baseUrl = baseUrlInput.value.trim();
 
-  if (!apiKey || !baseUrl) {
-    setStatus("应用前需要填写 API Key 和 base_url。", "error");
+  if (!provider || !apiKey || !baseUrl) {
+    setStatus("应用前需要填写 provider、API Key 和 base_url。", "error");
     return;
   }
 
@@ -362,6 +390,7 @@ async function applyForm() {
   try {
     const current = await invoke<CurrentConfig>("apply_profile", {
       input: {
+        provider,
         apiKey,
         baseUrl,
       },
@@ -389,6 +418,7 @@ function loadProfileIntoForm(id: string) {
   state.selectedProfileId = id;
   state.pendingDeleteId = "";
   nameInput.value = profile.name;
+  setProviderValue(profile.provider || "OpenAI");
   apiKeyInput.value = profile.apiKey;
   baseUrlInput.value = profile.baseUrl;
   renderProfiles();
@@ -405,6 +435,7 @@ async function applySavedProfile(id: string) {
 
   state.selectedProfileId = id;
   nameInput.value = profile.name;
+  setProviderValue(profile.provider || "OpenAI");
   apiKeyInput.value = profile.apiKey;
   baseUrlInput.value = profile.baseUrl;
   renderProfiles();
@@ -445,6 +476,7 @@ async function deleteProfile(id: string) {
 function renderCurrent() {
   if (!state.current) {
     currentApiKeyEl.textContent = "未读取";
+    currentProviderEl.textContent = "未读取";
     currentBaseUrlEl.textContent = "未读取";
     authPathEl.textContent = "未读取";
     configPathEl.textContent = "未读取";
@@ -452,6 +484,7 @@ function renderCurrent() {
   }
 
   currentApiKeyEl.textContent = maskKey(state.current.apiKey);
+  currentProviderEl.textContent = state.current.provider;
   currentBaseUrlEl.textContent = state.current.baseUrl;
   authPathEl.textContent = state.current.authPath;
   configPathEl.textContent = state.current.configPath;
@@ -472,6 +505,7 @@ function renderProfiles() {
             <h3>${escapeHtml(profile.name)}</h3>
             <span>${formatTime(profile.updatedAt)}</span>
           </div>
+          <p class="profile-card__meta">provider: ${escapeHtml(profile.provider || "OpenAI")}</p>
           <p class="profile-card__meta">${escapeHtml(profile.baseUrl)}</p>
           <p class="profile-card__meta profile-card__meta--mono">${escapeHtml(maskKey(profile.apiKey))}</p>
           <div class="profile-card__actions">
@@ -482,6 +516,54 @@ function renderProfiles() {
       `;
     })
     .join("");
+}
+
+function renderProviderOptions(preferredProvider?: string) {
+  const providers = new Set(DEFAULT_PROVIDER_OPTIONS);
+
+  if (state.current?.provider) {
+    providers.add(state.current.provider);
+  }
+
+  for (const profile of state.profiles) {
+    if (profile.provider) {
+      providers.add(profile.provider);
+    }
+  }
+
+  if (preferredProvider) {
+    providers.add(preferredProvider);
+  }
+
+  const options = ['<option value="">请选择 provider</option>'];
+  for (const provider of providers) {
+    options.push(
+      `<option value="${escapeHtml(provider)}">${escapeHtml(provider)}</option>`,
+    );
+  }
+
+  providerInput.innerHTML = options.join("");
+
+  if (preferredProvider) {
+    providerInput.value = preferredProvider;
+    return;
+  }
+
+  resetProviderSelection();
+}
+
+function resetProviderSelection() {
+  if (state.current?.provider) {
+    setProviderValue(state.current.provider);
+    return;
+  }
+
+  providerInput.value = "";
+}
+
+function setProviderValue(provider: string) {
+  renderProviderOptions(provider);
+  providerInput.value = provider;
 }
 
 function setBusy(isBusy: boolean) {

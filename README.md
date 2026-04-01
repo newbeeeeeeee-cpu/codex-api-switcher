@@ -1,10 +1,11 @@
 # Codex API Switcher
 
-`Codex API Switcher` 是一个基于 Tauri 2 的桌面工具，用来快速切换 Codex 正在使用的 API Key 和 `base_url`。
+`Codex API Switcher` 是一个基于 Tauri 2 的桌面工具，用来快速切换 Codex 正在使用的 API Key、provider 和 `base_url`。
 
 它适合这些场景：
 
 - 你有多个 OpenAI API Key，需要频繁切换账号
+- 你会在 `OpenAI`、`custom` 等不同 provider 之间切换
 - 你会在官方接口、自建中转、代理网关之间切换 `base_url`
 - 你不想每次都手动去改 `~/.codex/config.toml` 和 `auth.json`
 
@@ -16,12 +17,29 @@
 
 ## 它会改什么
 
-应用账号时，只会修改这两处：
+应用账号时，只会修改这三处：
 
 1. `auth.json` 里的 `OPENAI_API_KEY`
-2. `config.toml` 里 `[model_providers.OpenAI]` 下的 `base_url`
+2. `config.toml` 里的 `model_provider`
+3. `config.toml` 里当前生效 provider 对应的 `base_url`
 
 其他配置保持不动。
+
+当前生效 provider 会按表单里的 `provider` 写入顶层 `model_provider = "..."`，并定位对应 section，比如：
+
+- `model_provider = "OpenAI"` 时，修改 `[model_providers.OpenAI]` 下的 `base_url`
+- `model_provider = "custom"` 时，修改 `[model_providers.custom]` 下的 `base_url`
+
+如果当前 `config.toml` 结构和工具预期完全对不上，工具会直接生成一份最小可用模板，至少包含：
+
+- `model_provider`
+- `model`
+- `[model_providers.<provider>]`
+- `wire_api = "responses"`
+- `requires_openai_auth = true`
+- `base_url`
+
+如果当前 `auth.json` 结构不对，工具也会回退为重建最小模板，只保留 `OPENAI_API_KEY`。
 
 ## 配置文件位置
 
@@ -45,7 +63,7 @@
 
 ## 功能
 
-- 读取当前生效的 API Key 和 `base_url`
+- 读取当前生效的 API Key、provider 和 `base_url`
 - 保存多个账号到本地列表
 - 从列表中载入账号
 - 一键应用到 Codex
@@ -65,6 +83,7 @@
 右侧会显示：
 
 - 当前生效的 API Key
+- 当前生效的 `provider`
 - 当前生效的 `base_url`
 - 正在使用的 `auth.json` / `config.toml` 路径
 
@@ -73,6 +92,7 @@
 在右侧表单填写：
 
 - 账号名称
+- `Provider`
 - `OpenAI API Key`
 - `OpenAI base_url`
 
@@ -152,7 +172,7 @@ cargo build --manifest-path src-tauri/Cargo.toml --target x86_64-pc-windows-gnu
 
 - 这个工具只负责切换 Codex 配置，不管理你的 OpenAI 账户本身
 - 本地保存的账号列表里会包含 API Key，请注意机器权限和备份安全
-- 如果你的 Codex 配置格式和当前工具预期不一致，应用时会报错，不会静默覆盖
+- 如果现有配置结构无法可靠更新，工具会直接写入一份新的最小模板配置
 
 ## 仓库
 
